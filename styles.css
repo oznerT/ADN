@@ -96,15 +96,17 @@ h3 { font-size: 1.15rem; font-weight: 600; }
 .seq__lines line { stroke: var(--accent); stroke-width: 1; opacity: 0; transition: opacity 0.35s ease; }
 .seq__lines line.is-on { opacity: 0.55; }
 
-/* Celular: sin líneas; puntos numerados y tarjetas compactas abajo */
+/* Celular: igual que en compu (tarjeta + línea a la pieza), con tarjetas compactas en dos bandas */
 @media (max-width: 760px) {
-  .seq { height: 440vh; }
-  .seq__lines { display: none; }
-  .dot span { display: block; position: absolute; top: -22px; left: 50%; transform: translateX(-50%); font: 600 11px var(--font-body); color: var(--accent); }
-  .tag { width: auto; left: var(--gutter) !important; right: var(--gutter); top: auto !important; padding: 8px 12px; }
-  .tag h3 { font-size: 0.86rem; display: inline; }
+  .seq { height: 460vh; }
+  .tag { padding: 8px 10px; border-radius: 10px; }
+  .tag h3 { font-size: 0.8rem; }
   .tag .problem { display: none; }
-  .tag .fix { display: inline; margin-left: 0.4em; font-size: 0.82rem; }
+  .tag .fix { font-size: 0.74rem; line-height: 1.35; margin-top: 0.2em; }
+  .seq__lines line.is-on { opacity: 0.7; }
+  .seq__step--end { display: none; }
+  h1 { font-size: clamp(1.7rem, 7.4vw, 2.2rem); }
+  .seq__step .lead { font-size: 0.95rem; }
 }
 
 /* --- Secciones ---------------------------------------------------------------- */

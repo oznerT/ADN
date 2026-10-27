@@ -22,6 +22,9 @@ const LABELS = {
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const mobile = matchMedia("(max-width: 760px)");
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const NAV_H = 78; // alto del menú flotante: la banda de tarjetas de arriba arranca debajo
+const GUTTER_M = 12;
+const GAP_M = 8;
 const smooth = (t) => t * t * (3 - 2 * t);
 
 class Sequence {
@@ -40,19 +43,39 @@ class Sequence {
     this.current = 0;
     this.drawn = -1;
     this.labels = [];
+    this.pinned = null; // en celular: pieza tocada por el usuario
   }
 
   async init() {
-    const base = `assets/seq/${this.name}/`;
-    try {
-      const data = await fetch(base + "anchors.json").then((r) => r.json());
+    this.buildLabels();
+    await this.load();
+    this.resize();
+    mobile.addEventListener("change", async () => {
+      await this.load();
+      this.resize();
+    });
+  }
+
+  // En celular se usan los renders verticales (<nombre>_m, 900×1600); en compu los horizontales (1593×896).
+  async load() {
+    const variant = mobile.matches ? `${this.name}_m` : this.name;
+    if (variant === this.variant) return;
+    let base = `assets/seq/${variant}/`;
+    let data = await fetch(base + "anchors.json").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (!data && variant !== this.name) {
+      base = `assets/seq/${this.name}/`; // sin versión vertical: se usa la horizontal
+      data = await fetch(base + "anchors.json").then((r) => r.json()).catch(() => null);
+    }
+    this.variant = variant;
+    this.portrait = base.includes("_m/");
+    [this.imgW, this.imgH] = this.portrait ? [900, 1600] : [1593, 896];
+    if (data) {
       this.count = data.count;
       this.anchors = data.anchors;
-    } catch (e) {
-      console.warn("Sin anclas para", this.name);
     }
     const src = (i) => `${base}f${String(i).padStart(4, "0")}.webp`;
     // Primero el cuadro inicial; el resto en orden, sin bloquear.
+    this.frames = [];
     for (let i = 0; i < this.count; i++) {
       const img = new Image();
       img.decoding = "async";
@@ -61,9 +84,7 @@ class Sequence {
     }
     this.frames[0].src = src(0);
     for (let i = 1; i < this.count; i++) this.frames[i].src = src(i);
-
-    this.buildLabels();
-    this.resize();
+    this.drawn = -1;
   }
 
   buildLabels() {
@@ -76,7 +97,7 @@ class Sequence {
       dot.innerHTML = `<span>${n}</span>`;
       const tag = document.createElement("div");
       tag.className = "tag";
-      tag.innerHTML = `<h3>${mobile.matches ? n + ". " : ""}${d.title}</h3><p class="problem">“${d.problem}”</p><p class="fix">→ ${d.fix}</p>`;
+      tag.innerHTML = `<h3>${d.title}</h3><p class="problem">“${d.problem}”</p><p class="fix">→ ${d.fix}</p>`;
       const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
       this.labelsEl.append(dot, tag);
       this.svg.append(line);
@@ -99,14 +120,16 @@ class Sequence {
     const bottomOf = (st) => st.offsetTop + st.offsetHeight + 12;
     const hero = this.steps.find((st) => st.classList.contains("seq__step--hero"));
     const zone = Math.max(0, ...this.steps.filter((st) => st !== hero).map(bottomOf));
-    this.zoneTop = zone;
-    this.heroTop = hero ? Math.max(zone, bottomOf(hero)) : zone;
+    // celular: las tarjetas van en dos bandas (arriba y abajo del objeto), 3 por fila
+    this.cardW = (w - 2 * GUTTER_M - 2 * GAP_M) / 3;
+    this.labels.forEach((l) => { l.tag.style.width = mobile.matches ? `${this.cardW}px` : ""; });
+    this.bandH = mobile.matches ? Math.max(0, ...this.labels.map((l) => l.tag.offsetHeight)) : 0;
+    this.zoneTop = mobile.matches ? Math.max(zone, NAV_H + this.bandH + 14) : zone;
+    this.heroTop = hero ? Math.max(this.zoneTop, bottomOf(hero)) : this.zoneTop;
     this.heroEnd = hero ? +hero.dataset.to : 0;
-    // en celular las tarjetas van apiladas abajo: se reserva su alto real
-    const tagsH = this.labels.reduce((sum, l) => sum + l.tag.offsetHeight + 6, 0);
-    // al inicio no hay tarjetas: el render usa todo el alto; el lugar para ellas se abre al scrollear
+    // al inicio no hay tarjetas: el render usa todo el alto; el lugar para la banda de abajo se abre al scrollear
     this.bottomStart = mobile.matches ? h - 16 : h;
-    this.bottomEnd = mobile.matches ? h - tagsH - 16 : h;
+    this.bottomEnd = mobile.matches ? h - this.bandH - 30 : h;
     this.setRegion(this.zoneTop, this.bottomEnd);
     this.layoutTags();
     this.setRegion(this.heroTop, this.bottomStart);
@@ -115,24 +138,56 @@ class Sequence {
 
   setRegion(top, bottom) {
     this.regionBottom = bottom;
-    const ar = 1593 / 896;
-    // los renders tienen ~6% de aire arriba y abajo: un poco de zoom lo recorta sin cortar la pieza
-    let rh = (bottom - top) * 1.1;
-    let rw = rh * ar;
-    const maxW = this.w * (mobile.matches ? 1.5 : 1.15);
-    if (rw > maxW) {
-      rw = maxW;
+    const ar = this.imgW / this.imgH;
+    let rw, rh, cy;
+    if (this.portrait) {
+      // vertical: el objeto ocupa la franja media del cuadro (~30%–75% del alto) y casi todo el ancho;
+      // se ajusta al ancho de pantalla y el aire de arriba/abajo queda fuera de la región
+      rw = Math.min(this.w * 1.06, (bottom - top) * ar * 2.1);
       rh = rw / ar;
+      cy = 0.53; // centro vertical del objeto dentro del cuadro
+    } else {
+      // horizontal: ~6% de aire arriba y abajo, un poco de zoom lo recorta sin cortar la pieza
+      rh = (bottom - top) * 1.1;
+      rw = rh * ar;
+      const maxW = this.w * 1.15;
+      if (rw > maxW) {
+        rw = maxW;
+        rh = rw / ar;
+      }
+      cy = 0.5;
     }
-    this.rect = { w: rw, h: rh, x: (this.w - rw) / 2, y: (top + bottom) / 2 - rh / 2 };
+    this.rect = { w: rw, h: rh, x: (this.w - rw) / 2, y: (top + bottom) / 2 - rh * cy };
     this.regionTop = top;
   }
 
-  // Tarjetas en dos columnas (izq/der) según de qué lado está la pieza, repartidas en altura.
+  // Compu: tarjetas en dos columnas (izq/der) según de qué lado está la pieza, repartidas en altura.
+  // Celular: dos bandas, arriba las piezas de más arriba y abajo el resto, ordenadas de izq a der
+  // para que las líneas no se crucen. Cada tarjeta guarda dónde llega su línea (ex, ey).
   layoutTags() {
-    if (mobile.matches) return;
     const last = this.anchors[this.anchors.length - 1] || {};
     const pos = (l) => last[l.key] || [0.5, 0.5];
+    if (mobile.matches) {
+      const byY = [...this.labels].sort((a, b) => pos(a)[1] - pos(b)[1]);
+      const k = Math.ceil(byY.length / 2);
+      const bands = [byY.slice(0, k), byY.slice(k)];
+      bands.forEach((band, bi) => {
+        band.sort((a, b) => pos(a)[0] - pos(b)[0]);
+        const total = band.length * this.cardW + (band.length - 1) * GAP_M;
+        let x = (this.w - total) / 2;
+        for (const l of band) {
+          const th = l.tag.offsetHeight;
+          l.tx = x;
+          l.ty = bi === 0 ? NAV_H : this.h - 16 - th;
+          l.ex = x + this.cardW / 2;
+          l.ey = bi === 0 ? l.ty + th : l.ty;
+          l.tag.style.left = `${l.tx}px`;
+          l.tag.style.top = `${l.ty}px`;
+          x += this.cardW + GAP_M;
+        }
+      });
+      return;
+    }
     const mid = this.labels.reduce((s, l) => s + pos(l)[0], 0) / Math.max(1, this.labels.length);
     const sides = { left: [], right: [] };
     for (const l of this.labels) sides[pos(l)[0] < mid ? "left" : "right"].push(l);
@@ -152,6 +207,8 @@ class Sequence {
         l.tw = tw;
         l.tag.style.left = `${l.tx}px`;
         l.tag.style.top = `${l.ty}px`;
+        l.ex = side === "left" ? l.tx + tw : l.tx;
+        l.ey = y + heights[i] / 2;
         y += heights[i] + gap;
       });
     }
@@ -202,7 +259,6 @@ class Sequence {
     }
 
     const anc = this.anchors[idx] || {};
-    const visible = this.labels.filter((l) => idx >= l.from && anc[l.key]);
     for (const l of this.labels) {
       const a = anc[l.key];
       const on = !!a && idx >= l.from;
@@ -217,21 +273,11 @@ class Sequence {
       const y = this.rect.y + a[1] * this.rect.h;
       l.dot.style.left = `${x}px`;
       l.dot.style.top = `${y}px`;
-      if (mobile.matches) {
-        if (on) {
-          // apiladas desde abajo con su alto real (algunas ocupan dos líneas)
-          let b = 12;
-          for (let j = visible.length - 1; j > visible.indexOf(l); j--) b += visible[j].tag.offsetHeight + 6;
-          l.tag.style.bottom = `${b}px`;
-        }
-        continue;
-      }
-      const ex = l.side === "left" ? l.tx + l.tw : l.tx;
-      const ey = l.ty + l.th / 2;
+      if (l.ex === undefined) continue; // tarjetas todavía sin ubicar
       l.line.setAttribute("x1", x);
       l.line.setAttribute("y1", y);
-      l.line.setAttribute("x2", ex);
-      l.line.setAttribute("y2", ey);
+      l.line.setAttribute("x2", l.ex);
+      l.line.setAttribute("y2", l.ey);
     }
   }
 }
